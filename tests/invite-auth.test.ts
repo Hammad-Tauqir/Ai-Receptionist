@@ -21,7 +21,7 @@ test("owner bootstrap, private invitation, password login, and immediate revocat
 
   const ownerPassword = "owner-test-password-strong";
   await auth.api.signUpEmail({ body: { name: "Owner", email: "owner@example.test", password: ownerPassword } });
-  assert.equal(isApproved("owner@example.test"), true);
+  assert.equal(await isApproved("owner@example.test"), true);
   const publicResponse = await publicSignUp(new Request("http://localhost:3000/api/auth/sign-up/email", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ name: "Attacker", email: "target@example.test", password: "attacker-password-strong" }),
@@ -56,8 +56,8 @@ test("owner bootstrap, private invitation, password login, and immediate revocat
   assert.equal(firstResponse.status, 201);
   const first = await firstResponse.json() as { kind: string; url: string };
   assert.equal(first.kind, "invited");
-  assert.equal(isApproved("target@example.test"), false);
-  assert.equal(listPendingInvitations().length, 1);
+  assert.equal(await isApproved("target@example.test"), false);
+  assert.equal((await listPendingInvitations()).length, 1);
   const firstToken = new URLSearchParams(new URL(first.url).hash.slice(1)).get("token")!;
   const secondResponse = await makeInvite();
   const second = await secondResponse.json() as { kind: string; url: string };
@@ -70,8 +70,8 @@ test("owner bootstrap, private invitation, password login, and immediate revocat
 
   const token = new URLSearchParams(new URL(second.url).hash.slice(1)).get("token")!;
   assert.equal((await accept(token)).status, 200);
-  assert.equal(isApproved("target@example.test"), true);
-  assert.equal(listPendingInvitations().length, 0);
+  assert.equal(await isApproved("target@example.test"), true);
+  assert.equal((await listPendingInvitations()).length, 0);
   assert.equal((await accept(token)).status, 410);
 
   const cookie = await signIn("target@example.test", "recipient-password-strong");
@@ -91,7 +91,7 @@ test("owner bootstrap, private invitation, password login, and immediate revocat
     method: "DELETE", headers: ownerHeaders, body: JSON.stringify({ email: "target@example.test" }),
   }));
   assert.equal(revoke.status, 200);
-  assert.equal(isApproved("target@example.test"), false);
+  assert.equal(await isApproved("target@example.test"), false);
   assert.equal(await currentUser(headers), null);
   assert.equal((await chat(chatRequest())).status, 401);
   assert.equal(upstreamCalls, 1);
@@ -100,7 +100,7 @@ test("owner bootstrap, private invitation, password login, and immediate revocat
     body: JSON.stringify({ email: "target@example.test", password: "recipient-password-strong" }),
   }));
   assert.notEqual(revokedSignIn.status, 200);
-  assert.throws(() => revokeEmailAndInvitations("owner@example.test"), { message: "owner_cannot_be_revoked" });
+  await assert.rejects(revokeEmailAndInvitations("owner@example.test"), { message: "owner_cannot_be_revoked" });
 
   const logout = await publicSignUp(new Request("http://localhost:3000/api/auth/sign-out", {
     method: "POST", headers: ownerHeaders, body: "{}",

@@ -59,9 +59,10 @@ async function main() {
   ensureLocalSetting("BETTER_AUTH_URL", "http://localhost:3000");
 
   const { auth, authOptions } = await import("../src/lib/auth");
-  const { database } = await import("../src/lib/database");
+  const { dbOne, migrateCustomTables, table } = await import("../src/lib/database");
   await (await getMigrations(authOptions)).runMigrations();
-  if (database.prepare("SELECT 1 FROM user WHERE email = ?").get(email)) {
+  await migrateCustomTables();
+  if (await dbOne(`SELECT 1 FROM ${table("user")} WHERE email = ?`, [email])) {
     process.stdout.write("Owner account already exists. No password was changed.\n");
     return;
   }

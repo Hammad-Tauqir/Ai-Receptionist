@@ -212,10 +212,10 @@ test("revocation blocks the very next chat request despite the same session", as
 test("only the owner can view and change the allowlist", async () => {
   const rows = [{ email: "owner@example.com", addedAt: 0, addedBy: "environment", owner: true }];
   const dependencies = {
-    list: () => rows,
-    listPending: () => [],
-    invite: (email: string, addedBy: string) => ({ kind: "approved" as const, user: { email, addedAt: 1, addedBy, owner: false } }),
-    revoke: () => true,
+    list: async () => rows,
+    listPending: async () => [],
+    invite: async (email: string, addedBy: string) => ({ kind: "approved" as const, user: { email, addedAt: 1, addedBy, owner: false } }),
+    revoke: async () => true,
   };
   const regular = createAdminHandlers({ ...dependencies, authorize: async () => ({ id: "user", email: "user@example.com", name: "User", owner: false }) });
   assert.equal((await regular.GET(new Request("http://localhost/api/admin/allowed-users"))).status, 403);

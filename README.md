@@ -4,7 +4,7 @@ A responsive Next.js App Router website using TypeScript and Tailwind CSS. The w
 
 ## Invite-only authentication
 
-The receptionist uses Better Auth email/password sessions and a SQLite database. Public registration is disabled. The owner creates a password privately in the terminal, then generates personal invitation links at `/admin`. The owner emails each link manually; recipients set their own passwords. No transactional email provider is configured or used. The receptionist page and `/api/chat` re-check the current allowlist on every request.
+The receptionist uses Better Auth email/password sessions. It keeps the existing SQLite database for local development and uses Supabase PostgreSQL when `DATABASE_URL` is set. Public registration is disabled. The owner creates a password privately in the terminal, then generates personal invitation links at `/admin`. The owner emails each link manually; recipients set their own passwords. No transactional email provider is configured or used. The receptionist page and `/api/chat` re-check the current allowlist on every request.
 
 Add these server-only values to `.env.local` (never prefix them with `NEXT_PUBLIC_`):
 
@@ -12,19 +12,28 @@ Add these server-only values to `.env.local` (never prefix them with `NEXT_PUBLI
 BETTER_AUTH_SECRET=
 BETTER_AUTH_URL=http://localhost:3000
 OWNER_EMAIL=
+DATABASE_URL=
 AUTH_DATABASE_PATH=./data/auth.db
 ```
 
 - Set `OWNER_EMAIL` to the email that manages access. The owner is always approved and cannot be removed in the UI.
 - Run `npm run auth:setup-owner` in an interactive terminal. It privately prompts for a password of at least 12 characters, runs the database migration, and creates the owner account. It also generates and saves `BETTER_AUTH_SECRET` locally if missing and defaults `BETTER_AUTH_URL` to `http://localhost:3000`. It never prints the password or secret.
 - Set `BETTER_AUTH_URL` to the exact public site origin (HTTPS in production), and keep `BETTER_AUTH_SECRET` unchanged once accounts exist.
-- Set `AUTH_DATABASE_PATH` to a durable, writable volume in production. SQLite is suitable for one application instance; use a shared production database before horizontally scaling.
+- Leave `DATABASE_URL` blank for the existing local SQLite file at `AUTH_DATABASE_PATH`. Set `DATABASE_URL` on Vercel to use Supabase PostgreSQL; `AUTH_DATABASE_PATH` is ignored then. Never put the database URL in client code or Git.
 
 For later schema updates, run:
 
 ```sh
 npm run auth:migrate
 ```
+
+### Supabase PostgreSQL for Vercel
+
+Create a Supabase project. In its **Connect** dialog, copy the **Transaction pooler** URI (port 6543), replace its password placeholder locally, and set the result as the server-only `DATABASE_URL` in Vercel and in your local `.env.local` when running migrations. Percent-encode reserved password characters in the URI. This app uses one TLS-verified connection per warm serverless instance and unnamed queries, which are compatible with transaction pooling. Do not use Supabase's anon key or service-role key for this connection. The app creates its tables in a private `nova_auth` schema; **do not add that schema to Supabase's Exposed schemas**. See [Supabase's connection guide](https://supabase.com/docs/guides/database/connecting-to-postgres) and [private-schema guidance](https://supabase.com/docs/guides/api/using-custom-schemas).
+
+To keep existing local password accounts and approved emails, first run `npm run auth:import-sqlite` with `AUTH_DATABASE_PATH` still pointing at the old local file. This is a read-only dry run. Set `DATABASE_URL` to the new, empty Supabase database and run `npm run auth:import-sqlite -- --apply` in your own terminal. The importer creates the auth schema, refuses a non-empty target, preserves password hashes and approvals, and never prints them. Existing login sessions and pending invite links are not copied; users log in again, and the owner issues fresh links if needed. Do not run `auth:setup-owner` on the new target before this import. If there are no existing accounts to preserve, skip the importer and run `npm run auth:setup-owner` with `DATABASE_URL` set instead.
+
+Set `BETTER_AUTH_URL` to the final HTTPS site origin and set the same stable `BETTER_AUTH_SECRET`, `OWNER_EMAIL`, `DATABASE_URL`, and n8n settings as server-only Vercel environment variables before deploying. A GitHub push alone does not configure Vercel or migrate the database. Restart/redeploy after changing environment variables; do not leave SQLite as the Vercel database.
 
 Then log in as the owner, open `/admin`, enter an email, and copy the one-time link. Send that link to the person's email using your own email account. The link expires after 48 hours. The recipient opens it, sets a password, and logs in. A new invite for the same email cancels the previous link. **Revoke** removes access and pending invitations; a revoked login session may still exist, but the next protected page or API request is denied because approval is read live from the database. Reapproving an existing account restores access to its existing password.
 
@@ -108,7 +117,7 @@ The existing workflow must enforce consent before saving leads and explicit conf
 
 Requests require JSON, a 1–4,000 character message and a UUID v4 session ID. Request and upstream response sizes are bounded. Upstream calls time out after 25 seconds; the browser has a 35-second safeguard. Credentials are sent only server-to-server, and redirects are rejected. Replies are rendered with React Markdown without raw HTML; remote images are not loaded and links allow only HTTP(S), opened with `noopener noreferrer`.
 
-The server rejects messages over 4,000 characters with HTTP 413. `/api/chat` allows 8 requests per minute per authenticated user and 100 requests per minute overall per Node process. HTTP 429 includes a friendly explanation and `Retry-After`; the browser never retries automatically. Authentication and the live approval check run before parsing the request body or calling n8n. This in-memory limit resets on restart and is separate for each process or serverless instance; use a shared store or host-level rate limiting when deploying across instances.
+The server rejects messages over 4,000 characters with HTTP 413. `/api/chat` allows 8 requests per minute per authenticated user and 100 requests per minute overall. HTTP 429 includes a friendly explanation and `Retry-After`; the browser never retries automatically. Authentication and the live approval check run before parsing the request body or calling n8n. SQLite development uses an in-memory limit; Supabase PostgreSQL uses atomic shared counters across Vercel instances.
 
 The UI allows one pending request and disables duplicate sends, new-conversation changes and recording while waiting. No failure is automatically retried. Timeout, network, quota and malformed-response messages explain that a booking or lead action could not be confirmed. This is not a distributed idempotency guarantee: a workflow might complete after the reply is lost, and manual resubmission may duplicate an action. Confirm the outcome in the existing workflow before repeating a request.
 
@@ -122,6 +131,6 @@ npm run test:e2e
 
 Playwright uses the installed Chrome browser by default. Override `PLAYWRIGHT_CHANNEL` to `msedge` if needed. It starts the built website at `127.0.0.1:3100` with test-only auth configuration. Its chat request is deliberately unauthenticated and must be rejected before any n8n adapter call.
 
-Browser checks cover unauthenticated redirect, invite-only login UI, disabled public registration, protected chat/admin APIs, errors, and desktop/mobile overflow. Unit/API tests cover owner creation, one-time invitations, password login, approved and denied users, immediate revocation, owner-only administration, per-user limits, input validation, exact n8n credential encoding, safe upstream authentication errors, reply formats, timeouts, quota errors and malformed responses. Real email delivery by the owner, microphone hardware, browser recognition, installed voice quality, and the live n8n workflow still require manual checks. No live workflow requests, calendar bookings, lead saves or deployments were performed.
+Browser checks cover unauthenticated redirect, invite-only login UI, disabled public registration, protected chat/admin APIs, errors, and desktop/mobile overflow. Unit/API tests cover owner creation, one-time invitations, password login, approved and denied users, immediate revocation, owner-only administration, per-user limits, input validation, exact n8n credential encoding, safe upstream authentication errors, reply formats, timeouts, quota errors and malformed responses. An in-memory PostgreSQL test covers the Supabase code path without contacting a real project. Real Supabase connectivity and import, email delivery by the owner, microphone hardware, browser recognition, installed voice quality, and the live n8n workflow still require manual checks. No live workflow requests, calendar bookings, lead saves or Vercel deployment were performed.
 
 Main files: `src/app/page.tsx` (agency page), `src/app/globals.css` (responsive styling), `src/components/receptionist.tsx` (conversation UI), `src/hooks/use-browser-voice.ts` (voice lifecycle), `src/app/api/chat/route.ts` (server boundary), `src/lib/n8n.ts` (integration adapter).

@@ -2,7 +2,7 @@ import { MAX_MESSAGE_LENGTH, validateChatInput } from "@/lib/chat-contract";
 import { currentUser, type AuthorizedUser } from "@/lib/auth";
 import { ChatError, readLimitedBody, sendToN8n } from "@/lib/n8n";
 import { getN8nConfig } from "@/lib/n8n-config";
-import { chatRateLimiter } from "@/lib/rate-limit";
+import { checkChatRate } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,7 +29,11 @@ export function createChatHandler(dependencies: ChatDependencies = { authorize: 
   if (!user) {
     return Response.json({ error: "Log in with an approved email to use the receptionist.", code: "unauthorized" }, { status: 401, headers });
   }
-  const limit = chatRateLimiter.check(user.id);
+  let limit;
+  try { limit = await checkChatRate(user.id); }
+  catch {
+    return Response.json({ error: "The receptionist is temporarily unavailable. Please try again later.", code: "unavailable" }, { status: 503, headers });
+  }
   if (!limit.allowed) {
     return Response.json({
       error: "You’ve sent several messages recently. Please wait a moment before trying again. Your message was not sent.",

@@ -3,7 +3,7 @@ import "server-only";
 import { createHash, randomBytes } from "node:crypto";
 import { addApprovedEmail, isOwner, normalizeEmail, revokeApprovedEmail, type ApprovedUser } from "./access";
 import { auth } from "./auth";
-import { database } from "./database";
+import { dbAll, dbExecute, dbOne, table, withTransaction } from "./database";
 
 const INVITE_LIFETIME_MS = 48 * 60 * 60 * 1000;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
@@ -19,32 +19,34 @@ function tokenHash(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
-function invitationByToken(token: string): InvitationRow | undefined {
+async function invitationByToken(token: string): Promise<InvitationRow | undefined> {
   if (!TOKEN_PATTERN.test(token)) return undefined;
-  return database.prepare(`SELECT id, email, created_at AS createdAt, expires_at AS expiresAt,
-    claimed_at AS claimedAt, used_at AS usedAt, created_by AS createdBy
-    FROM invitation WHERE token_hash = ?`).get(tokenHash(token)) as InvitationRow | undefined;
+  const row = await dbOne<InvitationRow>(`SELECT id, email, created_at AS "createdAt", expires_at AS "expiresAt",
+    claimed_at AS "claimedAt", used_at AS "usedAt", created_by AS "createdBy"
+    FROM ${table("invitation")} WHERE token_hash = ?`, [tokenHash(token)]);
+  return row ? { ...row, id: Number(row.id), createdAt: Number(row.createdAt), expiresAt: Number(row.expiresAt) } : undefined;
 }
 
-export function listPendingInvitations(now = Date.now()): PendingInvitation[] {
-  return database.prepare(`SELECT id, email, created_at AS createdAt, expires_at AS expiresAt,
-    created_by AS createdBy FROM invitation
-    WHERE used_at IS NULL AND expires_at > ? ORDER BY created_at DESC`).all(now) as PendingInvitation[];
+export async function listPendingInvitations(now = Date.now()): Promise<PendingInvitation[]> {
+  const rows = await dbAll<PendingInvitation>(`SELECT id, email, created_at AS "createdAt", expires_at AS "expiresAt",
+    created_by AS "createdBy" FROM ${table("invitation")}
+    WHERE used_at IS NULL AND expires_at > ? ORDER BY created_at DESC`, [now]);
+  return rows.map(row => ({ ...row, id: Number(row.id), createdAt: Number(row.createdAt), expiresAt: Number(row.expiresAt) }));
 }
 
-export function inviteOrApprove(email: string, owner: string):
+export async function inviteOrApprove(email: string, owner: string): Promise<
   | { kind: "approved"; user: ApprovedUser }
-  | { kind: "invited"; invitation: PendingInvitation; url: string } {
+  | { kind: "invited"; invitation: PendingInvitation; url: string }> {
   const normalized = normalizeEmail(email);
   if (!validEmail(normalized)) throw new Error("invalid_email");
-  if (isOwner(normalized)) return { kind: "approved", user: addApprovedEmail(normalized, owner) };
+  if (isOwner(normalized)) return { kind: "approved", user: await addApprovedEmail(normalized, owner) };
 
   // A previously registered user can be reapproved without changing a password.
-  const existing = database.prepare("SELECT 1 FROM user WHERE email = ?").get(normalized);
-  if (existing) return database.transaction(() => {
-    database.prepare("DELETE FROM invitation WHERE email = ? AND used_at IS NULL").run(normalized);
-    return { kind: "approved" as const, user: addApprovedEmail(normalized, owner) };
-  })();
+  const existing = await dbOne(`SELECT 1 FROM ${table("user")} WHERE email = ?`, [normalized]);
+  if (existing) return withTransaction(async transaction => {
+    await dbExecute(`DELETE FROM ${table("invitation")} WHERE email = ? AND used_at IS NULL`, [normalized], transaction);
+    return { kind: "approved" as const, user: await addApprovedEmail(normalized, owner, transaction) };
+  });
 
   const baseURL = process.env.BETTER_AUTH_URL;
   if (!baseURL) throw new Error("base_url_missing");
@@ -52,51 +54,50 @@ export function inviteOrApprove(email: string, owner: string):
   const now = Date.now();
   const expiresAt = now + INVITE_LIFETIME_MS;
   const createdBy = normalizeEmail(owner);
-  const create = database.transaction(() => {
-    database.prepare("DELETE FROM invitation WHERE email = ? AND used_at IS NULL").run(normalized);
-    const result = database.prepare(`INSERT INTO invitation (email, token_hash, created_at, expires_at, created_by)
-      VALUES (?, ?, ?, ?, ?)`).run(normalized, tokenHash(token), now, expiresAt, createdBy);
-    return Number(result.lastInsertRowid);
+  const id = await withTransaction(async transaction => {
+    await dbExecute(`DELETE FROM ${table("invitation")} WHERE email = ? AND used_at IS NULL`, [normalized], transaction);
+    const result = await dbOne<{ id: number }>(`INSERT INTO ${table("invitation")} (email, token_hash, created_at, expires_at, created_by)
+      VALUES (?, ?, ?, ?, ?) RETURNING id`, [normalized, tokenHash(token), now, expiresAt, createdBy], transaction);
+    if (!result) throw new Error("invitation_not_saved");
+    return Number(result.id);
   });
-  const id = create();
   const url = new URL("/accept-invite", baseURL);
   // Fragment tokens are not sent in GET requests or Referer headers.
   url.hash = `token=${token}`;
   return { kind: "invited", invitation: { id, email: normalized, createdAt: now, expiresAt, createdBy }, url: url.toString() };
 }
 
-export function revokeEmailAndInvitations(email: string): boolean {
+export async function revokeEmailAndInvitations(email: string): Promise<boolean> {
   const normalized = normalizeEmail(email);
   if (!validEmail(normalized)) throw new Error("invalid_email");
   if (isOwner(normalized)) throw new Error("owner_cannot_be_revoked");
-  return database.transaction(() => {
-    const removedInvitations = database.prepare("DELETE FROM invitation WHERE email = ? AND used_at IS NULL").run(normalized).changes;
-    const removedApproval = revokeApprovedEmail(normalized);
+  return withTransaction(async transaction => {
+    const removedInvitations = await dbExecute(`DELETE FROM ${table("invitation")} WHERE email = ? AND used_at IS NULL`, [normalized], transaction);
+    const removedApproval = await revokeApprovedEmail(normalized, transaction);
     return removedInvitations > 0 || removedApproval;
-  })();
+  });
 }
 
 export async function acceptInvitation(token: string, name: string, password: string): Promise<string> {
-  const row = invitationByToken(token);
+  const row = await invitationByToken(token);
   const now = Date.now();
   if (!row || row.usedAt || row.claimedAt || row.expiresAt <= now) throw new Error("invalid_invitation");
-  const claim = database.prepare(`UPDATE invitation SET claimed_at = ?
-    WHERE id = ? AND claimed_at IS NULL AND used_at IS NULL AND expires_at > ?`).run(now, row.id, now);
-  if (claim.changes !== 1) throw new Error("invalid_invitation");
+  const claim = await dbExecute(`UPDATE ${table("invitation")} SET claimed_at = ?
+    WHERE id = ? AND claimed_at IS NULL AND used_at IS NULL AND expires_at > ?`, [now, row.id, now]);
+  if (claim !== 1) throw new Error("invalid_invitation");
 
   try {
-    if (database.prepare("SELECT 1 FROM user WHERE email = ?").get(row.email)) throw new Error("account_exists");
+    if (await dbOne(`SELECT 1 FROM ${table("user")} WHERE email = ?`, [row.email])) throw new Error("account_exists");
     await auth.api.signUpEmail({ body: { email: row.email, name, password } });
-    const finalize = database.transaction(() => {
-      const current = database.prepare("SELECT 1 FROM invitation WHERE id = ? AND claimed_at = ? AND used_at IS NULL").get(row.id, now);
+    await withTransaction(async transaction => {
+      const current = await dbOne(`SELECT 1 FROM ${table("invitation")} WHERE id = ? AND claimed_at = ? AND used_at IS NULL`, [row.id, now], transaction);
       if (!current) throw new Error("invalid_invitation");
-      addApprovedEmail(row.email, row.createdBy);
-      database.prepare("UPDATE invitation SET used_at = ? WHERE id = ?").run(Date.now(), row.id);
+      await addApprovedEmail(row.email, row.createdBy, transaction);
+      await dbExecute(`UPDATE ${table("invitation")} SET used_at = ? WHERE id = ?`, [Date.now(), row.id], transaction);
     });
-    finalize();
     return row.email;
   } catch (error) {
-    database.prepare("UPDATE invitation SET claimed_at = NULL WHERE id = ? AND claimed_at = ? AND used_at IS NULL").run(row.id, now);
+    await dbExecute(`UPDATE ${table("invitation")} SET claimed_at = NULL WHERE id = ? AND claimed_at = ? AND used_at IS NULL`, [row.id, now]);
     throw error;
   }
 }

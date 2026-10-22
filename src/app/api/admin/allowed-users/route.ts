@@ -17,17 +17,18 @@ function sameOrigin(request: Request): boolean {
 
 type AdminDependencies = {
   authorize: (headers: Headers) => Promise<AuthorizedUser | null>;
-  list: () => ApprovedUser[];
-  listPending: () => PendingInvitation[];
+  list: () => Promise<ApprovedUser[]>;
+  listPending: () => Promise<PendingInvitation[]>;
   invite: typeof inviteOrApprove;
-  revoke: (email: string) => boolean;
+  revoke: (email: string) => Promise<boolean>;
 };
 
 export function createAdminHandlers(dependencies: AdminDependencies = { authorize: currentUser, list: listApprovedUsers, listPending: listPendingInvitations, invite: inviteOrApprove, revoke: revokeEmailAndInvitations }) {
   async function requireOwner(request: Request) { const user = await dependencies.authorize(request.headers); return user?.owner ? user : null; }
   async function GET(request: Request) {
     if (!await requireOwner(request)) return Response.json({ error: "Owner access required." }, { status: 403, headers: responseHeaders });
-    return Response.json({ users: dependencies.list(), pending: dependencies.listPending() }, { headers: responseHeaders });
+    const [users, pending] = await Promise.all([dependencies.list(), dependencies.listPending()]);
+    return Response.json({ users, pending }, { headers: responseHeaders });
   }
   async function POST(request: Request) {
     const owner = await requireOwner(request);
@@ -38,11 +39,12 @@ export function createAdminHandlers(dependencies: AdminDependencies = { authoriz
       const body: unknown = JSON.parse(await readLimitedBody(request.body, 2_048));
       const email = body && typeof body === "object" && "email" in body ? (body as { email?: unknown }).email : null;
       if (typeof email !== "string") throw new Error("invalid_email");
-      const result = dependencies.invite(email, owner.email);
+      const result = await dependencies.invite(email, owner.email);
       return Response.json(result, { status: 201, headers: responseHeaders });
     } catch (error) {
-      const configuration = error instanceof Error && error.message === "base_url_missing";
-      return Response.json({ error: configuration ? "The site URL is not configured." : "Enter a valid email address." }, { status: configuration ? 503 : 400, headers: responseHeaders });
+      const code = error instanceof Error ? error.message : "";
+      const badInput = code === "invalid_email";
+      return Response.json({ error: badInput ? "Enter a valid email address." : code === "base_url_missing" ? "The site URL is not configured." : "Could not update access. Please try again." }, { status: badInput ? 400 : 503, headers: responseHeaders });
     }
   }
 
@@ -54,11 +56,12 @@ export function createAdminHandlers(dependencies: AdminDependencies = { authoriz
       const body: unknown = JSON.parse(await readLimitedBody(request.body, 2_048));
       const email = body && typeof body === "object" && "email" in body ? (body as { email?: unknown }).email : null;
       if (typeof email !== "string") throw new Error("invalid_email");
-      dependencies.revoke(email);
+      await dependencies.revoke(email);
       return Response.json({ ok: true }, { headers: responseHeaders });
     } catch (error) {
-      const owner = error instanceof Error && error.message === "owner_cannot_be_revoked";
-      return Response.json({ error: owner ? "The owner cannot be revoked here." : "Enter a valid email address." }, { status: 400, headers: responseHeaders });
+      const code = error instanceof Error ? error.message : "";
+      const badInput = code === "invalid_email" || code === "owner_cannot_be_revoked";
+      return Response.json({ error: code === "owner_cannot_be_revoked" ? "The owner cannot be revoked here." : badInput ? "Enter a valid email address." : "Could not update access. Please try again." }, { status: badInput ? 400 : 503, headers: responseHeaders });
     }
   }
   return { GET, POST, DELETE };
