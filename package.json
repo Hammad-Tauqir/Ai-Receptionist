@@ -1,0 +1,36 @@
+{
+  "name": "nova-digital-receptionist",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "auth:migrate": "tsx --conditions=react-server scripts/migrate-auth.ts",
+    "auth:setup-owner": "tsx --conditions=react-server scripts/setup-owner.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --conditions=react-server --test tests/chat.test.ts tests/invite-auth.test.ts",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "better-auth": "^1.7.12",
+    "better-sqlite3": "^13.0.3",
+    "lucide-react": "^0.468.0",
+    "next": "16.4.2",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "react-markdown": "^10.1.0",
+    "server-only": "^0.0.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "@tailwindcss/postcss": "4.3.3",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "tailwindcss": "4.3.3",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
