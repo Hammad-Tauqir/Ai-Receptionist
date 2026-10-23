@@ -3,6 +3,7 @@ import "server-only";
 import { X509Certificate } from "node:crypto";
 import { rootCertificates } from "node:tls";
 import type { PoolConfig } from "pg";
+import { supabaseRootCertificate } from "./supabase-ca";
 
 /** Keep provider CA certificates server-side and retain certificate/hostname checks. */
 export function postgresConfig(connectionString: string, certificate?: string): PoolConfig {
@@ -18,6 +19,12 @@ export function postgresConfig(connectionString: string, certificate?: string): 
     throw new Error("database_url_invalid");
   }
   for (const key of ["sslmode", "ssl", "uselibpqcompat", "sslnegotiation"]) url.searchParams.delete(key);
+
+  // Only Supabase endpoints receive the bundled provider CA. Explicit CA
+  // configuration takes precedence, including during provider CA rotation.
+  const isSupabase = /^db\.[a-z0-9]+\.supabase\.co$/.test(url.hostname)
+    || /^[a-z0-9-]+\.pooler\.supabase\.com$/.test(url.hostname);
+  if (!certificate?.trim() && isSupabase) certificate = supabaseRootCertificate;
 
   let ca: string[] | undefined;
   if (certificate?.trim()) {
