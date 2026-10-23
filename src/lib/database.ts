@@ -5,6 +5,7 @@ import { PostgresDialect } from "kysely";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { Pool, type PoolClient } from "pg";
+import { postgresConfig } from "./postgres-config";
 
 const AUTH_SCHEMA = "nova_auth";
 const connectionString = process.env.DATABASE_URL?.trim();
@@ -20,26 +21,7 @@ const globalDatabase = globalThis as typeof globalThis & {
 
 function createPool(): Pool {
   if (!connectionString) throw new Error("database_url_missing");
-  let url: URL;
-  try { url = new URL(connectionString); }
-  catch { throw new Error("database_url_invalid"); }
-  if (!["postgres:", "postgresql:"].includes(url.protocol) || !url.hostname || !url.password) {
-    throw new Error("database_url_invalid");
-  }
-  // node-postgres replaces the explicit TLS settings when these URI options
-  // are present. Drop sslmode (we require verified TLS below) and reject custom
-  // certificate paths that a serverless deployment cannot safely assume exist.
-  if (["sslcert", "sslkey", "sslrootcert"].some(key => url.searchParams.has(key))) {
-    throw new Error("database_url_invalid");
-  }
-  url.searchParams.delete("sslmode");
-  const pool = new Pool({
-    connectionString: url.toString(),
-    max: 1,
-    connectionTimeoutMillis: 10_000,
-    idleTimeoutMillis: 30_000,
-    ssl: { rejectUnauthorized: true },
-  });
+  const pool = new Pool(postgresConfig(connectionString, process.env.DATABASE_SSL_CA));
   pool.on("error", () => { /* The next query reports failure without printing connection secrets. */ });
   return pool;
 }

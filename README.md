@@ -13,6 +13,7 @@ BETTER_AUTH_SECRET=
 BETTER_AUTH_URL=http://localhost:3000
 OWNER_EMAIL=
 DATABASE_URL=
+DATABASE_SSL_CA=
 AUTH_DATABASE_PATH=./data/auth.db
 ```
 
@@ -28,6 +29,10 @@ npm run auth:migrate
 ```
 
 ### Supabase PostgreSQL for Vercel
+
+For Supabase's database certificate authority, open **Database > Settings > SSL** in the Supabase dashboard and download the **server root certificate**. Set the complete PEM contents (including `-----BEGIN CERTIFICATE-----` and `-----END CERTIFICATE-----`) as the server-only `DATABASE_SSL_CA` in Vercel's Production environment and locally before migrating. In Vercel paste the multiline value without surrounding quotes; in `.env.local` put double quotes around the multiline value. Literal `\n` line separators are also supported. This is a public CA certificate, not the database password, an API key, or a private key. Use only the certificate downloaded from your project's dashboard; never trust a certificate copied from a failed TLS connection.
+
+`SELF_SIGNED_CERT_IN_CHAIN` indicates that the database certificate chain is not trusted by the runtime. `DATABASE_SSL_CA` adds the supplied CA to the driver's trust store while preserving TLS certificate and hostname verification. Malformed certificates fail with `database_ssl_ca_invalid`. Do not disable verification with `NODE_TLS_REJECT_UNAUTHORIZED=0` or `rejectUnauthorized: false`. URL SSL flags cannot override the app's verification settings; filesystem certificate options in the URL are rejected. Redeploy after adding the environment variable. A successful TLS connection still requires the auth schema migration below; adding a CA does not create tables. See [Supabase SSL documentation](https://supabase.com/docs/guides/platform/ssl-enforcement).
 
 Create a Supabase project. In its **Connect** dialog, copy the **Transaction pooler** URI (port 6543), replace its password placeholder locally, and set the result as the server-only `DATABASE_URL` in Vercel and in your local `.env.local` when running migrations. Percent-encode reserved password characters in the URI. This app uses one TLS-verified connection per warm serverless instance and unnamed queries, which are compatible with transaction pooling. Do not use Supabase's anon key or service-role key for this connection. The app creates its tables in a private `nova_auth` schema; **do not add that schema to Supabase's Exposed schemas**. See [Supabase's connection guide](https://supabase.com/docs/guides/database/connecting-to-postgres) and [private-schema guidance](https://supabase.com/docs/guides/api/using-custom-schemas).
 
