@@ -9,6 +9,7 @@
     "auth:migrate": "tsx --conditions=react-server scripts/migrate-auth.ts",
     "auth:import-sqlite": "tsx --conditions=react-server scripts/import-sqlite.ts",
     "auth:setup-owner": "tsx --conditions=react-server scripts/setup-owner.ts",
+    "auth:reset-owner": "tsx --conditions=react-server scripts/reset-owner.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx --conditions=react-server --test tests/chat.test.ts tests/invite-auth.test.ts tests/postgres-auth.test.ts tests/postgres-import.test.ts tests/postgres-config.test.ts",
     "test:e2e": "playwright test"
